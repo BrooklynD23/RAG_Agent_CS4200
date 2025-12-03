@@ -1,0 +1,39 @@
+.venv/
+venv/
+env/
+
+__pycache__/
+*.py[cod]
+*.pyo
+
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+.coverage
+coverage.xml
+htmlcov/
+
+.dist/
+dist/
+build/
+
+*.log
+
+# Environment files (keep example)
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+!.env.example
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
