@@ -2,6 +2,15 @@ import os
 
 import httpx
 import streamlit as st
+from openai import OpenAI
+
+try:
+    from src.news_rag.config import settings
+except ModuleNotFoundError:  # pragma: no cover - import fallback
+    try:
+        from news_rag.config import settings
+    except ModuleNotFoundError:  # pragma: no cover - import fallback
+        settings = None  # type: ignore[assignment]
 
 try:
     from src.news_rag.ui.components import render_summary, render_sources
@@ -110,6 +119,8 @@ def main() -> None:
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
+    if "last_context" not in st.session_state:
+        st.session_state["last_context"] = None
 
     with st.sidebar:
         st.markdown("### Settings")
@@ -119,61 +130,149 @@ def main() -> None:
         )
         max_articles = st.slider("Max articles", min_value=3, max_value=15, value=10)
 
+        if st.button("Reset conversation"):
+            st.session_state["messages"] = []
+            st.session_state["last_context"] = None
+            st.experimental_rerun()
+
     st.markdown('<div class="nr-app-title">Briefly</div>', unsafe_allow_html=True)
     st.markdown(
         "<div class=\"nr-app-subtitle\">Briefly summarizes and verifies the latest news for you.</div>",
         unsafe_allow_html=True,
     )
 
+    def chat_about_context(followup: str) -> str:
+        context = st.session_state.get("last_context") or {}
+        summary_text = context.get("summary_text") or ""
+        sources = context.get("sources") or []
+
+        lines = []
+        for idx, source in enumerate(sources[:8], start=1):
+            title = source.get("title") or ""
+            source_name = source.get("source") or ""
+            url = source.get("url") or ""
+            parts = [f"{idx}."]
+            if title:
+                parts.append(title)
+            if source_name:
+                parts.append(f"({source_name})")
+            if url:
+                parts.append(f"- {url}")
+            lines.append(" ".join(parts))
+
+        sources_text = "\n".join(lines)
+
+        system_content = (
+            "You are a helpful assistant discussing a previously generated news summary. "
+            "Answer follow-up questions using only the summary and sources provided. "
+            "If the user asks about information that is not covered by this context, say you do not know."
+        )
+
+        history_messages = []
+        for msg in st.session_state.get("messages", []):
+            if msg.get("role") == "user":
+                content = msg.get("content") or msg.get("query") or ""
+                if content:
+                    history_messages.append({"role": "user", "content": content})
+            elif msg.get("role") == "assistant" and msg.get("type") == "chat":
+                content = msg.get("content") or ""
+                if content:
+                    history_messages.append({"role": "assistant", "content": content})
+
+        user_context = (
+            "Here is the existing news summary and list of sources:\n\n"
+            f"SUMMARY:\n{summary_text}\n\n"
+            f"SOURCES:\n{sources_text}\n\n"
+            f"User follow-up question: {followup}"
+        )
+
+        messages = [{"role": "system", "content": system_content}]
+        if history_messages:
+            messages.extend(history_messages[-6:])
+        messages.append({"role": "user", "content": user_context})
+
+        try:
+            if settings is not None and getattr(settings, "openai_api_key", None):
+                client = OpenAI(api_key=settings.openai_api_key)
+            else:
+                client = OpenAI()
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+            )
+            return completion.choices[0].message.content or ""
+        except Exception as exc:
+            st.error(f"Error calling chat model: {exc}")
+            return "There was an error while answering your question about the summary."
+
     def handle_prompt(prompt: str) -> None:
-        st.session_state["messages"].append({"role": "user", "query": prompt})
+        st.session_state["messages"].append({"role": "user", "content": prompt})
 
         with st.chat_message("user", avatar="🧑"):
             st.markdown(prompt)
 
-        with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Contacting backend and generating summary..."):
-                try:
-                    response = httpx.post(
-                        f"{API_BASE_URL}/summarize",
-                        json={
-                            "query": prompt,
-                            "time_range": time_range,
-                            "verification": verification,
-                            "max_articles": max_articles,
-                        },
-                        timeout=60.0,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                except Exception as exc:  # pragma: no cover - network dependent
-                    st.error(f"Error calling backend: {exc}")
-                    return
+        if not st.session_state.get("last_context"):
+            with st.chat_message("assistant", avatar="🤖"):
+                with st.spinner("Contacting backend and generating summary..."):
+                    try:
+                        response = httpx.post(
+                            f"{API_BASE_URL}/summarize",
+                            json={
+                                "query": prompt,
+                                "time_range": time_range,
+                                "verification": verification,
+                                "max_articles": max_articles,
+                            },
+                            timeout=60.0,
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                    except Exception as exc:  # pragma: no cover - network dependent
+                        st.error(f"Error calling backend: {exc}")
+                        return
 
-            error = (
-                (data.get("meta") or {}).get("error") if isinstance(data, dict) else None
-            )
-            if error:
-                st.warning(f"Backend returned an error: {error}")
+                error = (
+                    (data.get("meta") or {}).get("error") if isinstance(data, dict) else None
+                )
+                if error:
+                    st.warning(f"Backend returned an error: {error}")
 
-            summary_text = data.get("summary_text", "") if isinstance(data, dict) else ""
-            sources = data.get("sources") or [] if isinstance(data, dict) else []
-            render_summary(summary_text)
-            render_sources(sources)
-            meta = data.get("meta") if isinstance(data, dict) else None
-            if meta:
-                with st.expander("Debug info"):
-                    st.json(meta)
+                summary_text = data.get("summary_text", "") if isinstance(data, dict) else ""
+                sources = data.get("sources") or [] if isinstance(data, dict) else []
+                render_summary(summary_text)
+                render_sources(sources)
+                meta = data.get("meta") if isinstance(data, dict) else None
+                if meta:
+                    with st.expander("Debug info"):
+                        st.json(meta)
 
-        st.session_state["messages"].append(
-            {
-                "role": "assistant",
+            st.session_state["last_context"] = {
                 "query": prompt,
                 "summary_text": summary_text,
                 "sources": sources,
                 "meta": meta,
             }
-        )
+            st.session_state["messages"].append(
+                {
+                    "role": "assistant",
+                    "type": "summary",
+                    "summary_text": summary_text,
+                    "sources": sources,
+                    "meta": meta,
+                }
+            )
+        else:
+            with st.chat_message("assistant", avatar="🤖"):
+                with st.spinner("Talking about the retrieved news..."):
+                    reply_text = chat_about_context(prompt)
+                    st.markdown(reply_text)
+            st.session_state["messages"].append(
+                {
+                    "role": "assistant",
+                    "type": "chat",
+                    "content": reply_text,
+                }
+            )
 
     if not st.session_state["messages"]:
         st.markdown("#### Try an example question")
@@ -196,14 +295,18 @@ def main() -> None:
         avatar = "🧑" if role == "user" else "🤖"
         with st.chat_message("user" if role == "user" else "assistant", avatar=avatar):
             if role == "user":
-                st.markdown(msg.get("query", ""))
+                st.markdown(msg.get("content", msg.get("query", "")))
             else:
-                render_summary(msg.get("summary_text", ""))
-                render_sources(msg.get("sources") or [])
-                meta = msg.get("meta")
-                if meta:
-                    with st.expander("Debug info"):
-                        st.json(meta)
+                msg_type = msg.get("type", "summary")
+                if msg_type == "chat":
+                    st.markdown(msg.get("content", ""))
+                else:
+                    render_summary(msg.get("summary_text", ""))
+                    render_sources(msg.get("sources") or [])
+                    meta = msg.get("meta")
+                    if meta:
+                        with st.expander("Debug info"):
+                            st.json(meta)
 
     prompt = st.chat_input("Ask about current news...")
     if prompt:
