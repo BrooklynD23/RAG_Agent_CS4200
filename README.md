@@ -95,7 +95,21 @@ Copy `.env.example` to `.env` and fill in the values:
 - `GNEWS_API_KEY` (optional)
 - `NEWS_RAG_MODEL_NAME`
 
-### 3. Run the API
+### 3. Run everything with one command
+
+```bash
+python scripts/run_app.py
+```
+
+The script will ensure Python dependencies from `requirements.txt` are
+installed (you can skip with `--skip-install`), wait for the FastAPI
+backend to become healthy, and then launch the Streamlit UI pointed at
+that backend.
+
+Additional options: `--backend-host`, `--backend-port`,
+`--frontend-port`, `--backend-startup-timeout`, and `--no-reload`.
+
+### 4. Run the API
 
 ```bash
 uvicorn src.news_rag.api.server:app --reload
@@ -106,7 +120,7 @@ FastAPI docs will be available at:
 - `http://localhost:8000/docs`
 - `http://localhost:8000/redoc`
 
-### 4. Run the UI
+### 5. Run the UI
 
 ```bash
 streamlit run src/news_rag/ui/streamlit_app.py
