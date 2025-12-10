@@ -12,8 +12,11 @@ The application is an AI‑powered news Retrieval‑Augmented Generation (RAG)
 agent. For a natural‑language query about current events, it:
 
 - Retrieves fresh news articles from the open web.
+- **Stores articles in a ChromaDB vector database for persistent retrieval.**
 - Summarizes them into a concise, multi‑source answer.
 - Attaches explicit citations to each factual claim.
+- **Answers follow-up questions by retrieving relevant chunks from stored articles.**
+- **Automatically performs web search fallback when stored sources are insufficient.**
 - Optionally runs a verification pass to reduce hallucinations.
 
 All of this is exposed through a FastAPI backend and a Streamlit UI.
@@ -31,13 +34,14 @@ All of this is exposed through a FastAPI backend and a Streamlit UI.
 
 ### 2.2 External APIs and services
 
-- **OpenAI API**
+- **Google AI Studio / Gemini API**
   - Used for:
-    - Query classification (router).
-    - News summarization (main writer model).
+    - News summarization and follow-up answers (main writer model).
     - Optional verification/critic pass.
+    - Embeddings for the vector store (Gemini `text-embedding-004`).
   - Configured via environment variables loaded by `src/news_rag/config.py`
-    (`OPENAI_API_KEY`, `NEWS_RAG_MODEL_NAME`).
+    (`GOOGLE_API_KEY`, `NEWS_RAG_MODEL_NAME`, `GOOGLE_CHAT_MODEL`,
+    `GOOGLE_EMBEDDING_MODEL`).
 
 - **Tavily API**
   - Primary web search and news retrieval tool.
@@ -49,8 +53,10 @@ All of this is exposed through a FastAPI backend and a Streamlit UI.
   - Backup news source if Tavily is unavailable or rate‑limited.
   - Configured via `GNEWS_API_KEY`.
 
-No persistent database or vector store is required; retrieval is ephemeral and
-per‑request.
+- **ChromaDB** (NEW)
+  - Local vector database for persistent article chunk storage.
+  - Stores embeddings for semantic retrieval.
+  - Configured via `CHROMA_PERSIST_DIR` (default: `.chroma_db`).
 
 ---
 
@@ -62,16 +68,30 @@ Key directories and modules:
   - **`config.py`** – loads settings (API keys, model names, tuning params).
   - **`models/`** – Pydantic models representing articles, summaries, and
     agent state.
+    - `news.py` – Article, SummarySentence, NewsSummary
+    - `state.py` – Legacy NewsState
+    - `rag_state.py` – RAG state models (ArticleChunk, RetrievedChunk, etc.)
   - **`tools/`** – wrappers around Tavily, GNews, and caching.
   - **`core/`** – core RAG logic: routing, retrieval, summarization,
     verification, and the LangGraph agent.
+    - `graph.py` – Legacy LangGraph agent
+    - `rag_graph.py` – **NEW** Full RAG LangGraph pipeline
+    - `vector_store.py` – **NEW** ChromaDB integration
+    - `article_ingestor.py` – **NEW** Article chunking and embedding
+    - `vector_retriever.py` – **NEW** Semantic retrieval
+    - `sufficiency_checker.py` – **NEW** Retrieval adequacy checking
+    - `answer_generator.py` – **NEW** Grounded answer generation
   - **`api/server.py`** – FastAPI application and HTTP routes.
   - **`ui/`** – Streamlit app and UI components.
 
 - **`tests/`** – unit and integration tests.
-- **`docs/architecture/`** – more detailed architecture write‑ups.
-- **`scripts/run_app.py`** – helper to install deps (if needed) and start
-  backend + frontend together.
+- **`docs/`** – documentation
+  - `RAG_ARCHITECTURE.md` – **NEW** Detailed RAG system documentation
+  - `architecture/` – component-level architecture write‑ups.
+  - `usage/` – quickstart and examples.
+  - `api/` – API documentation.
+- **`scripts/run_app.py`** – helper to install deps, initialize vector store,
+  and start backend + frontend together.
 
 ---
 
@@ -81,13 +101,40 @@ Key directories and modules:
 
 FastAPI provides a thin HTTP layer over the agent logic:
 
+### RAG Endpoints (Recommended)
+
+- `POST /rag/query`
+  - **Main RAG endpoint** for both initial queries and follow-ups.
+  - Request body:
+    - `message: str` – user's query or follow-up question.
+    - `conversation_id: str | null` – pass existing ID for follow-ups.
+    - `time_range: str` – e.g. `"24h"`, `"7d"`, `"30d"`, `"all"`.
+    - `max_articles: int` – upper bound on articles to fetch.
+    - `max_chunks: int` – upper bound on chunks to retrieve.
+  - Response:
+    - `answer_text` – generated summary or answer.
+    - `answer_type` – `"summary"`, `"followup_answer"`, or `"web_augmented_answer"`.
+    - `sources` – list of source references with URLs and metadata.
+    - `conversation_id` – ID for tracking conversation state.
+
+- `GET /rag/conversation/{id}/sources`
+  - Get all sources stored for a conversation.
+
+- `DELETE /rag/conversation/{id}`
+  - Clear all stored chunks for a conversation.
+
+- `GET /rag/stats`
+  - Get vector store statistics.
+
+### Legacy Endpoints
+
 - `GET /health`
   - Simple health check returning `{ "status": "ok" }`.
 
 - `POST /summarize`
-  - Main production endpoint used by the Streamlit UI.
+  - Legacy summarization endpoint (no vector storage).
   - Request body (`SummarizeRequest`):
-    - `query: str` – user’s news question.
+    - `query: str` – user's news question.
     - `time_range: str` – e.g. `"24h"`, `"7d"`, `"30d"`, `"all"`.
     - `verification: bool` – enable/disable verification loop.
     - `max_articles: int` – upper bound on how many articles to use.
@@ -178,9 +225,9 @@ This package assembles the retrieval‑augmented generation pipeline.
 The application is configured primarily through a `.env` file loaded by
 `src/news_rag/config.py` using Pydantic `BaseSettings`:
 
-- **`OPENAI_API_KEY`**
-  - Required for all calls to the OpenAI API (routing, summarization,
-    verification).
+- **`GOOGLE_API_KEY`**
+  - Required for all calls to the Gemini API (summarization, follow-up
+    answers, verification, and embeddings).
 - **`TAVILY_API_KEY`**
   - Required for the Tavily search tool used in retrieval.
 - **`GNEWS_API_KEY`** (optional)

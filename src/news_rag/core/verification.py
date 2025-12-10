@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 import json
 
-from openai import OpenAI
+import google.generativeai as genai
 
 from ..config import settings
 from ..logging_config import get_logger
@@ -34,10 +34,12 @@ def build_verifier_input(summary: NewsSummary, articles: List[Article]) -> Dict[
     }
 
 
-def _get_openai_client() -> OpenAI:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured in the environment.")
-    return OpenAI(api_key=settings.openai_api_key)
+def _get_gemini_model() -> genai.GenerativeModel:
+    if not settings.google_api_key:
+        raise RuntimeError("GOOGLE_API_KEY is not configured in the environment.")
+    genai.configure(api_key=settings.google_api_key)
+    model_name = settings.news_rag_model_name or settings.google_chat_model
+    return genai.GenerativeModel(model_name)
 
 
 def verify_summary(summary: NewsSummary, articles: List[Article]) -> Dict[str, Any]:
@@ -46,7 +48,6 @@ def verify_summary(summary: NewsSummary, articles: List[Article]) -> Dict[str, A
     Returns the parsed JSON verdict from the critic model.
     """
 
-    client = _get_openai_client()
     payload = build_verifier_input(summary, articles)
     messages = [
         {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
@@ -60,14 +61,19 @@ def verify_summary(summary: NewsSummary, articles: List[Article]) -> Dict[str, A
         model=settings.news_rag_model_name,
     )
 
-    response = client.chat.completions.create(
-        model=settings.news_rag_model_name,
-        messages=messages,
+    prompt = "\n\n".join(
+        [
+            "SYSTEM: " + CRITIC_SYSTEM_PROMPT,
+            "USER: " + json.dumps(payload),
+        ]
     )
 
+    model = _get_gemini_model()
+    response = model.generate_content(prompt)
+
     try:
-        content = response.choices[0].message.content or ""
-    except (AttributeError, IndexError) as exc:
+        content = response.text or ""
+    except Exception as exc:
         logger.warning("verify_summary_invalid_response", error=str(exc))
         raise RuntimeError("Critic returned an invalid response structure.") from exc
 

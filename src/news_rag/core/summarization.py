@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 import json
 
-from openai import OpenAI
+import google.generativeai as genai
 
 from ..config import settings
 from ..logging_config import get_logger
@@ -34,12 +34,14 @@ def build_summarizer_input(topic: str, articles: List[Article]) -> Dict[str, Any
     }
 
 
-def _get_openai_client() -> OpenAI:
-    """Return an OpenAI client using configuration from settings."""
+def _get_gemini_model() -> genai.GenerativeModel:
+    """Return a Gemini model client using configuration from settings."""
 
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured in the environment.")
-    return OpenAI(api_key=settings.openai_api_key)
+    if not settings.google_api_key:
+        raise RuntimeError("GOOGLE_API_KEY is not configured in the environment.")
+    genai.configure(api_key=settings.google_api_key)
+    model_name = settings.news_rag_model_name or settings.google_chat_model
+    return genai.GenerativeModel(model_name)
 
 
 def summarize_articles(topic: str, articles: List[Article]) -> NewsSummary:
@@ -61,7 +63,6 @@ def summarize_articles(topic: str, articles: List[Article]) -> NewsSummary:
             meta={"warning": "no_articles"},
         )
 
-    client = _get_openai_client()
     payload = build_summarizer_input(topic, articles)
     messages = [
         {"role": "system", "content": SUMMARIZER_SYSTEM_PROMPT},
@@ -75,14 +76,19 @@ def summarize_articles(topic: str, articles: List[Article]) -> NewsSummary:
         model=settings.news_rag_model_name,
     )
 
-    response = client.chat.completions.create(
-        model=settings.news_rag_model_name,
-        messages=messages,
+    prompt = "\n\n".join(
+        [
+            "SYSTEM: " + SUMMARIZER_SYSTEM_PROMPT,
+            "USER: " + json.dumps(payload),
+        ]
     )
 
+    model = _get_gemini_model()
+    response = model.generate_content(prompt)
+
     try:
-        content = response.choices[0].message.content or ""
-    except (AttributeError, IndexError) as exc:
+        content = response.text or ""
+    except Exception as exc:
         logger.warning("summarize_articles_invalid_response", error=str(exc))
         raise RuntimeError("Summarizer returned an invalid response structure.") from exc
 

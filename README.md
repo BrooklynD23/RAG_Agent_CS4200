@@ -1,15 +1,26 @@
 # RAG_Agent_CS4200
+
 AI-powered news Retrieval-Augmented Generation (RAG) agent for the CS4200 final project.
 
-The system:
-- Accepts topical queries about current events.
-- Fetches recent news from the open web via Tavily (with GNews fallback).
-- Produces concise summaries grounded in multiple sources.
-- Attaches explicit citations to each factual claim via source IDs.
-- Optionally runs a verification loop to reduce hallucinations.
+## Overview
 
-This repository implements the architecture described in the `Test` specification
-and the markdowns under `docs/architecture`.
+This system implements a full RAG pipeline for news summarization and question answering:
+
+- **Initial Queries**: Fetches news articles, stores them in a vector database, and generates cited summaries
+- **Follow-up Questions**: Retrieves relevant chunks from stored articles to answer questions
+- **Web Fallback**: Automatically searches for more sources when stored data is insufficient
+- **Citation Tracking**: Every answer includes source citations for verification
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Vector Storage** | ChromaDB for persistent article chunk storage |
+| **Semantic Retrieval** | Gemini embeddings (`text-embedding-004`) via Google AI Studio for relevant chunk retrieval |
+| **LangGraph Orchestration** | State machine for complex RAG workflows |
+| **Sufficiency Checking** | Heuristic + LLM evaluation of retrieval quality |
+| **Web Search Fallback** | Tavily/GNews integration for additional sources |
+| **Conversation Tracking** | Persistent conversation IDs for multi-turn interactions |
 
 ## Repository Layout
 
@@ -18,59 +29,46 @@ and the markdowns under `docs/architecture`.
 ├── README.md
 ├── requirements.txt
 ├── .env.example
-├── PROJECT_HANDOFF.md
-├── src/
-│   └── news_rag/
-│       ├── __init__.py
-│       ├── config.py
-│       ├── models/
-│       │   ├── __init__.py
-│       │   ├── news.py
-│       │   └── state.py
-│       ├── tools/
-│       │   ├── __init__.py
-│       │   ├── tavily_tool.py
-│       │   ├── gnews_tool.py
-│       │   └── cache.py
-│       ├── core/
-│       │   ├── __init__.py
-│       │   ├── router.py
-│       │   ├── retrieval.py
-│       │   ├── summarization.py
-│       │   ├── verification.py
-│       │   ├── graph.py
-│       │   └── prompts.py
-│       ├── api/
-│       │   ├── __init__.py
-│       │   └── server.py
-│       └── ui/
-│           ├── __init__.py
-│           ├── streamlit_app.py
-│           └── components.py
+├── docs/
+│   ├── RAG_ARCHITECTURE.md      # Detailed RAG system documentation
+│   ├── architecture/            # Component-level architecture docs
+│   ├── usage/                   # Quickstart and examples
+│   └── api/                     # API documentation
+├── src/news_rag/
+│   ├── config.py                # Settings and environment config
+│   ├── models/
+│   │   ├── news.py              # Article, Summary models
+│   │   ├── state.py             # Legacy NewsState
+│   │   └── rag_state.py         # RAG state models (NEW)
+│   ├── tools/
+│   │   ├── tavily_tool.py       # Tavily news search
+│   │   ├── gnews_tool.py        # GNews fallback
+│   │   └── cache.py             # In-memory caching
+│   ├── core/
+│   │   ├── graph.py             # Legacy LangGraph agent
+│   │   ├── rag_graph.py         # RAG LangGraph pipeline (NEW)
+│   │   ├── vector_store.py      # ChromaDB integration (NEW)
+│   │   ├── article_ingestor.py  # Chunking & embedding (NEW)
+│   │   ├── vector_retriever.py  # Semantic retrieval (NEW)
+│   │   ├── sufficiency_checker.py # Retrieval adequacy (NEW)
+│   │   ├── answer_generator.py  # Grounded answers (NEW)
+│   │   ├── retrieval.py         # News fetching
+│   │   ├── summarization.py     # Summary generation
+│   │   └── verification.py      # Fact checking
+│   ├── api/
+│   │   └── server.py            # FastAPI with RAG endpoints
+│   └── ui/
+│       ├── streamlit_app.py     # Streamlit frontend
+│       └── components.py        # UI components
 ├── tests/
 │   ├── unit/
-│   │   ├── test_tavily_tool.py
-│   │   ├── test_router.py
-│   │   ├── test_summarization.py
-│   │   └── test_verification.py
+│   │   ├── test_rag_pipeline.py # RAG component tests (NEW)
+│   │   └── ...
 │   └── integration/
-│       ├── test_end_to_end.py
-│       └── test_api.py
-├── docs/
-│   ├── architecture/
-│   │   ├── 01_system-overview.md
-│   │   ├── 02_backend-agent-architecture.md
-│   │   ├── 03_retrieval-and-data-sources.md
-│   │   ├── 04_generation-and-prompting.md
-│   │   ├── 05_frontend-and-api.md
-│   │   ├── 06_devops-and-observability.md
-│   │   ├── 07_testing-and-evaluation.md
-│   │   └── 08_future-work-and-extensions.md
-│   ├── usage/
-│   │   ├── quickstart.md
-│   │   └── examples.md
-│   └── api/
-│       └── openapi.md
+│       ├── test_rag_api.py      # RAG API tests (NEW)
+│       └── ...
+├── scripts/
+│   └── run_app.py               # Launch script with RAG support
 └── docker/
     ├── Dockerfile
     └── docker-compose.yml
@@ -90,10 +88,17 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill in the values:
 
-- `OPENAI_API_KEY`
-- `TAVILY_API_KEY`
-- `GNEWS_API_KEY` (optional)
-- `NEWS_RAG_MODEL_NAME`
+```bash
+# Required
+GOOGLE_API_KEY=your-google-api-key   # Gemini (Google AI Studio) API key
+TAVILY_API_KEY=tvly-...
+
+# Optional
+GNEWS_API_KEY=...
+NEWS_RAG_MODEL_NAME=gemini-1.5-flash
+CHROMA_PERSIST_DIR=.chroma_db
+USE_RAG_API=true
+```
 
 ### 3. Run everything with one command
 
@@ -101,66 +106,99 @@ Copy `.env.example` to `.env` and fill in the values:
 python scripts/run_app.py
 ```
 
-The script will ensure Python dependencies from `requirements.txt` are
-installed (you can skip with `--skip-install`), wait for the FastAPI
-backend to become healthy, and then launch the Streamlit UI pointed at
-that backend.
+The script will:
+1. Load environment variables from `.env`
+2. Check for required API keys
+3. Install/upgrade dependencies (skip with `--skip-install`)
+4. Initialize the ChromaDB vector store directory
+5. Start the FastAPI backend
+6. Start the Streamlit frontend
 
-Additional options: `--backend-host`, `--backend-port`,
-`--frontend-port`, `--backend-startup-timeout`, and `--no-reload`.
+**Available options:**
 
-### 4. Run the API
+| Option | Description |
+|--------|-------------|
+| `--skip-install` | Skip dependency installation |
+| `--upgrade-deps` | Upgrade all packages to latest |
+| `--reset-vector-store` | Clear existing vector data |
+| `--legacy-mode` | Use legacy API (no RAG) |
+| `--backend-port PORT` | Backend port (default: 8000) |
+| `--frontend-port PORT` | Frontend port (default: 8501) |
+| `--no-reload` | Disable auto-reload |
+
+### 4. Run the API manually
 
 ```bash
 uvicorn src.news_rag.api.server:app --reload
 ```
 
-FastAPI docs will be available at:
+FastAPI docs available at:
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-- `http://localhost:8000/docs`
-- `http://localhost:8000/redoc`
-
-### 5. Run the UI
+### 5. Run the UI manually
 
 ```bash
 streamlit run src/news_rag/ui/streamlit_app.py
 ```
 
-The Streamlit app talks to the FastAPI backend (default:
-`http://localhost:8000`) and lets you enter queries, configure time
-range and verification, and inspect summaries plus sources.
+## API Endpoints
 
-## Architecture Docs
+### RAG Endpoints (New)
 
-High-level and detailed design docs live in `docs/architecture/` and are
-derived from the `Test` specification. Recommended reading order:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/rag/query` | POST | Main query endpoint (initial + follow-up) |
+| `/rag/conversation/{id}/sources` | GET | Get sources for a conversation |
+| `/rag/conversation/{id}` | DELETE | Clear conversation data |
+| `/rag/stats` | GET | Vector store statistics |
 
-1. `docs/architecture/01_system-overview.md`
-2. `docs/architecture/02_backend-agent-architecture.md`
-3. `docs/architecture/03_retrieval-and-data-sources.md`
-4. `docs/architecture/04_generation-and-prompting.md`
+### Legacy Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/summarize` | POST | Legacy summarization (no vector storage) |
+| `/debug/run-graph` | POST | Debug LangGraph execution |
+
+## Architecture
+
+The RAG pipeline follows this flow:
+
+```
+Initial Query → Fetch News → Ingest to Vector DB → Generate Summary
+                                    ↓
+Follow-up Question → Retrieve Chunks → Check Sufficiency
+                                            ↓
+                          Sufficient? → Generate Answer
+                                ↓
+                          Insufficient → Web Search → Ingest → Answer
+```
+
+For detailed architecture documentation, see:
+- `docs/RAG_ARCHITECTURE.md` - Complete RAG system documentation
+- `docs/architecture/` - Component-level architecture docs
 
 ## Testing
 
-Run unit tests:
-
 ```bash
-pytest tests/unit
+# Run all tests
+pytest
+
+# Run RAG-specific tests
+pytest tests/unit/test_rag_pipeline.py -v
+pytest tests/integration/test_rag_api.py -v
+
+# Run with coverage
+pytest --cov=src/news_rag
 ```
 
-Run integration tests:
+## Documentation
 
-```bash
-pytest tests/integration
-```
-
-Some tests currently assert that unimplemented functions raise
-`NotImplementedError` until the full functionality is implemented.
-
-## Usage and Handoff
-
-- For step-by-step setup and run instructions, see
-  `docs/usage/quickstart.md`.
-- For concrete API and UI examples, see `docs/usage/examples.md`.
-- For the phase-by-phase project plan, file scaffolding checklist, and
-  session logs, see `PROJECT_HANDOFF.md`.
+| Document | Description |
+|----------|-------------|
+| `docs/RAG_ARCHITECTURE.md` | Complete RAG pipeline documentation |
+| `docs/usage/quickstart.md` | Step-by-step setup guide |
+| `docs/usage/examples.md` | API and UI usage examples |
+| `docs/api/openapi.md` | API endpoint documentation |
+| `docs/architecture/` | Component architecture docs |

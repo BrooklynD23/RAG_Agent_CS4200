@@ -1,8 +1,8 @@
 import os
+from typing import Optional
 
 import httpx
 import streamlit as st
-from openai import OpenAI
 
 try:
     from src.news_rag.config import settings
@@ -19,6 +19,9 @@ except ModuleNotFoundError:
 
 
 API_BASE_URL = os.getenv("NEWS_RAG_API_BASE_URL", "http://localhost:8000")
+
+# Whether to use the new RAG API (True) or legacy summarize API (False)
+USE_RAG_API = os.getenv("USE_RAG_API", "true").lower() == "true"
 
 
 def main() -> None:
@@ -121,6 +124,8 @@ def main() -> None:
         st.session_state["messages"] = []
     if "last_context" not in st.session_state:
         st.session_state["last_context"] = None
+    if "conversation_id" not in st.session_state:
+        st.session_state["conversation_id"] = None
 
     with st.sidebar:
         st.markdown("### Settings")
@@ -131,9 +136,26 @@ def main() -> None:
         max_articles = st.slider("Max articles", min_value=3, max_value=15, value=10)
 
         if st.button("Reset conversation"):
+            # Clear conversation from backend if using RAG API
+            if USE_RAG_API and st.session_state.get("conversation_id"):
+                try:
+                    httpx.delete(
+                        f"{API_BASE_URL}/rag/conversation/{st.session_state['conversation_id']}",
+                        timeout=10.0,
+                    )
+                except Exception:
+                    pass  # Ignore errors on cleanup
             st.session_state["messages"] = []
             st.session_state["last_context"] = None
-            st.experimental_rerun()
+            st.session_state["conversation_id"] = None
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
+        
+        # Show conversation ID in sidebar for debugging
+        if st.session_state.get("conversation_id"):
+            st.markdown(f"**Conversation ID:** `{st.session_state['conversation_id'][:8]}...`")
 
     st.markdown('<div class="nr-app-title">Briefly</div>', unsafe_allow_html=True)
     st.markdown(
@@ -141,7 +163,37 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    def chat_about_context(followup: str) -> str:
+    def call_rag_api(message: str, is_followup: bool = False) -> dict:
+        """Call the RAG API for both initial queries and follow-ups."""
+        conversation_id = st.session_state.get("conversation_id")
+        
+        try:
+            response = httpx.post(
+                f"{API_BASE_URL}/rag/query",
+                json={
+                    "message": message,
+                    "conversation_id": conversation_id,
+                    "time_range": time_range,
+                    "max_articles": max_articles,
+                    "include_debug": True,
+                },
+                timeout=120.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            st.error(f"Error calling RAG API: {exc}")
+            return {
+                "answer_text": f"Error: {exc}",
+                "answer_type": "error",
+                "sources": [],
+                "conversation_id": conversation_id or "",
+            }
+
+    def chat_about_context_legacy(followup: str) -> str:
+        """Legacy chat function using direct Gemini calls (fallback)."""
+        import google.generativeai as genai
+
         context = st.session_state.get("last_context") or {}
         summary_text = context.get("summary_text") or ""
         sources = context.get("sources") or []
@@ -192,20 +244,85 @@ def main() -> None:
         messages.append({"role": "user", "content": user_context})
 
         try:
-            if settings is not None and getattr(settings, "openai_api_key", None):
-                client = OpenAI(api_key=settings.openai_api_key)
-            else:
-                client = OpenAI()
-            completion = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
+            if settings is not None and getattr(settings, "google_api_key", None):
+                genai.configure(api_key=settings.google_api_key)
+            model_name = (
+                getattr(settings, "news_rag_model_name", None)
+                or getattr(settings, "google_chat_model", "gemini-1.5-flash")
             )
-            return completion.choices[0].message.content or ""
+            model = genai.GenerativeModel(model_name)
+            prompt_lines = [
+                f"{msg.get('role', 'user').upper()}: {msg.get('content', '')}"
+                for msg in messages
+            ]
+            prompt = "\n\n".join(prompt_lines)
+            response = model.generate_content(prompt)
+            return response.text or ""
         except Exception as exc:
             st.error(f"Error calling chat model: {exc}")
             return "There was an error while answering your question about the summary."
 
-    def handle_prompt(prompt: str) -> None:
+    def handle_prompt_rag(prompt: str) -> None:
+        """Handle prompt using the new RAG API."""
+        st.session_state["messages"].append({"role": "user", "content": prompt})
+
+        with st.chat_message("user", avatar="🧑"):
+            st.markdown(prompt)
+
+        is_initial = not st.session_state.get("conversation_id")
+        spinner_text = "Fetching news and generating summary..." if is_initial else "Retrieving from sources and generating answer..."
+
+        with st.chat_message("assistant", avatar="🤖"):
+            with st.spinner(spinner_text):
+                data = call_rag_api(prompt, is_followup=not is_initial)
+
+            # Update conversation ID from response
+            if data.get("conversation_id"):
+                st.session_state["conversation_id"] = data["conversation_id"]
+
+            answer_text = data.get("answer_text", "")
+            answer_type = data.get("answer_type", "summary")
+            sources = data.get("sources", [])
+            debug = data.get("debug")
+
+            # Render based on answer type
+            if answer_type == "summary":
+                render_summary(answer_text)
+                render_sources(sources)
+            elif answer_type in ("followup_answer", "web_augmented_answer"):
+                st.markdown(answer_text)
+                if answer_type == "web_augmented_answer":
+                    st.info("🔍 Additional web search was performed to answer this question.")
+                if sources:
+                    with st.expander(f"Sources used ({len(sources)})"):
+                        render_sources(sources)
+            else:
+                st.markdown(answer_text)
+
+            if debug:
+                with st.expander("Debug info"):
+                    st.json(debug)
+
+        # Update session state
+        st.session_state["last_context"] = {
+            "query": prompt,
+            "summary_text": answer_text,
+            "sources": sources,
+            "answer_type": answer_type,
+        }
+        st.session_state["messages"].append(
+            {
+                "role": "assistant",
+                "type": "chat" if answer_type != "summary" else "summary",
+                "content": answer_text,
+                "summary_text": answer_text if answer_type == "summary" else None,
+                "sources": sources,
+                "meta": debug,
+            }
+        )
+
+    def handle_prompt_legacy(prompt: str) -> None:
+        """Handle prompt using the legacy summarize API."""
         st.session_state["messages"].append({"role": "user", "content": prompt})
 
         with st.chat_message("user", avatar="🧑"):
@@ -264,7 +381,7 @@ def main() -> None:
         else:
             with st.chat_message("assistant", avatar="🤖"):
                 with st.spinner("Talking about the retrieved news..."):
-                    reply_text = chat_about_context(prompt)
+                    reply_text = chat_about_context_legacy(prompt)
                     st.markdown(reply_text)
             st.session_state["messages"].append(
                 {
@@ -273,6 +390,9 @@ def main() -> None:
                     "content": reply_text,
                 }
             )
+
+    # Choose which handler to use based on USE_RAG_API flag
+    handle_prompt = handle_prompt_rag if USE_RAG_API else handle_prompt_legacy
 
     if not st.session_state["messages"]:
         st.markdown("#### Try an example question")
@@ -288,7 +408,10 @@ def main() -> None:
             with col:
                 if st.button(example, key=f"example-{idx}"):
                     handle_prompt(example)
-                    st.stop()
+                    if hasattr(st, "rerun"):
+                        st.rerun()
+                    else:
+                        st.experimental_rerun()
 
     for msg in st.session_state["messages"]:
         role = msg.get("role", "assistant")
@@ -308,7 +431,12 @@ def main() -> None:
                         with st.expander("Debug info"):
                             st.json(meta)
 
-    prompt = st.chat_input("Ask about current news...")
+    placeholder = (
+        "Ask a follow-up question about this summary..."
+        if st.session_state.get("last_context")
+        else "Ask about current news..."
+    )
+    prompt = st.chat_input(placeholder)
     if prompt:
         handle_prompt(prompt)
 

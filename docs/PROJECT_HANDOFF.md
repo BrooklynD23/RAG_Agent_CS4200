@@ -37,7 +37,7 @@ Mark each phase complete when all its tasks are checked off.
 - [x] P0.1 Create `requirements.txt` or `pyproject.toml` with core deps:
   - `fastapi`, `uvicorn[standard]`, `pydantic`, `httpx`, `streamlit`, `langchain`, `langgraph`, `python-dotenv`, `pytest`
 - [x] P0.2 Create `.env.example` with:
-  - `OPENAI_API_KEY=`
+  - `GOOGLE_API_KEY=`
   - `TAVILY_API_KEY=`
   - `GNEWS_API_KEY=`
   - `NEWS_RAG_MODEL_NAME=`
@@ -96,8 +96,8 @@ Mark each phase complete when all its tasks are checked off.
 - [x] P3.4 Create `src/news_rag/core/verification.py`:
   - [x] Critic pass that evaluates each sentence’s support from sources.
 
-*Note:* Summarization and verification require `OPENAI_API_KEY` to be set in
-the environment. When the key is missing, the API returns sources plus a
+*Note:* Summarization and verification require `GOOGLE_API_KEY` to be set in
+the environment for Gemini. When the key is missing, the API returns sources plus a
 descriptive error message in `meta.error` instead of failing hard.
 
 ### Phase 4 – Agent Orchestration (LangGraph)
@@ -330,7 +330,7 @@ Use this to track which files exist (even if empty).
 - Expanded architecture docs (01–03) and API docs (`docs/api/openapi.md`) to match the current implementation.
 
 **Open questions / blockers:**
-- Full end-to-end verification depends on user-provided `OPENAI_API_KEY` and `TAVILY_API_KEY`.
+- Full end-to-end verification depends on user-provided `GOOGLE_API_KEY` and `TAVILY_API_KEY`.
 
 **Next recommended actions:**
 - Flesh out tests for retrieval, summarization, verification, and API using mocks.
@@ -339,7 +339,80 @@ Use this to track which files exist (even if empty).
 
 ---
 
+### Session 2025-12-06 – Agent: Cascade
+
+**Phase focus:**
+- Phase 10 – RAG Refactor (NEW)
+
+**Tasks completed this session:**
+- Full RAG pipeline implementation with vector database storage
+- Created new core modules:
+  - `src/news_rag/models/rag_state.py` - RAG state models
+  - `src/news_rag/core/vector_store.py` - ChromaDB integration
+  - `src/news_rag/core/article_ingestor.py` - Article chunking and embedding
+  - `src/news_rag/core/vector_retriever.py` - Semantic retrieval
+  - `src/news_rag/core/sufficiency_checker.py` - Retrieval adequacy checking
+  - `src/news_rag/core/answer_generator.py` - Grounded answer generation
+  - `src/news_rag/core/rag_graph.py` - Full RAG LangGraph pipeline
+- Updated API with new RAG endpoints:
+  - `POST /rag/query` - Main query endpoint
+  - `GET /rag/conversation/{id}/sources` - Get conversation sources
+  - `DELETE /rag/conversation/{id}` - Clear conversation
+  - `GET /rag/stats` - Vector store statistics
+- Updated Streamlit UI to use RAG API with `USE_RAG_API` toggle
+- Updated `scripts/run_app.py` with RAG support:
+  - ChromaDB directory initialization
+  - Environment variable checking
+  - `--reset-vector-store` and `--legacy-mode` flags
+- Created RAG-specific tests:
+  - `tests/unit/test_rag_pipeline.py`
+  - `tests/integration/test_rag_api.py`
+- Created `docs/RAG_ARCHITECTURE.md` documentation
+- Updated all documentation to reflect RAG changes
+- Consolidated root markdown files to `docs/` folder
+
+**New files created:**
+- `src/news_rag/models/rag_state.py`
+- `src/news_rag/core/vector_store.py`
+- `src/news_rag/core/article_ingestor.py`
+- `src/news_rag/core/vector_retriever.py`
+- `src/news_rag/core/sufficiency_checker.py`
+- `src/news_rag/core/answer_generator.py`
+- `src/news_rag/core/rag_graph.py`
+- `tests/unit/test_rag_pipeline.py`
+- `tests/integration/test_rag_api.py`
+- `docs/RAG_ARCHITECTURE.md`
+
+**Files modified:**
+- `requirements.txt` - Added chromadb, langchain dependencies
+- `src/news_rag/api/server.py` - Added RAG endpoints
+- `src/news_rag/ui/streamlit_app.py` - RAG API integration
+- `scripts/run_app.py` - RAG support and new CLI options
+- `README.md` - Updated for RAG architecture
+- `docs/usage/quickstart.md` - RAG quickstart guide
+- `docs/api/openapi.md` - RAG endpoint documentation
+
+---
+
 ## 5. Current Status
 
 - Phases completed: 0–6 (environment, scaffolding, retrieval, summarization, agent, API, and UI).
+- Phase 10 (RAG Refactor) completed.
 - Phases 7–9 in progress (tests, deployment, and polish).
+
+## 6. RAG Architecture Summary
+
+The system now supports two modes:
+
+### RAG Mode (Default)
+- Articles are stored in ChromaDB vector database
+- Follow-up questions retrieve relevant chunks
+- Automatic web search fallback when sources are insufficient
+- Conversation tracking via `conversation_id`
+
+### Legacy Mode
+- Summary-only, no vector storage
+- Follow-up questions use summary text only
+- Enable with `--legacy-mode` flag or `USE_RAG_API=false`
+
+See `docs/RAG_ARCHITECTURE.md` for detailed documentation.

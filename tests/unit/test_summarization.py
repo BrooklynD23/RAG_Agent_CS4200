@@ -33,14 +33,18 @@ def test_summarize_articles_requires_api_key(monkeypatch) -> None:
         )
     ]
 
-    monkeypatch.setattr(config.settings, "openai_api_key", None)
+    monkeypatch.setattr(config.settings, "google_api_key", None)
     with pytest.raises(RuntimeError):
         summarize_articles("topic", articles)
 
 
 def test_summarize_articles_uses_mocked_openai(monkeypatch) -> None:
-    class DummyCompletions:
-        def create(self, model, messages):
+    class DummyResponse:
+        def __init__(self, content: str) -> None:
+            self.text = content
+
+    class DummyModel:
+        def generate_content(self, prompt: str) -> DummyResponse:  # type: ignore[override]
             # The implementation should send our payload as JSON; we return
             # a minimal JSON response that the summarization code expects.
             payload = {
@@ -49,31 +53,10 @@ def test_summarize_articles_uses_mocked_openai(monkeypatch) -> None:
                     {"text": "Stub sentence", "source_ids": ["1"]},
                 ],
             }
-
-            class DummyMessage:
-                def __init__(self, content: str) -> None:
-                    self.content = content
-
-            class DummyChoice:
-                def __init__(self, content: str) -> None:
-                    self.message = DummyMessage(content)
-
-            class DummyResponse:
-                def __init__(self, content: str) -> None:
-                    self.choices = [DummyChoice(content)]
-
             return DummyResponse(json.dumps(payload))
 
-    class DummyChat:
-        def __init__(self) -> None:
-            self.completions = DummyCompletions()
-
-    class DummyClient:
-        def __init__(self) -> None:
-            self.chat = DummyChat()
-
     # Avoid using a real API key or real OpenAI client.
-    monkeypatch.setattr(summarization, "_get_openai_client", lambda: DummyClient())
+    monkeypatch.setattr(summarization, "_get_gemini_model", lambda: DummyModel())
 
     articles = [
         Article(

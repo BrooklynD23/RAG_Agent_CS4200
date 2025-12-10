@@ -7,7 +7,23 @@ import streamlit as st
 
 def render_summary(summary_text: str) -> None:
     st.subheader("Summary")
-    st.write(summary_text or "No summary available yet.")
+    if not summary_text:
+        st.write("No summary available yet.")
+        return
+
+    text = summary_text.strip()
+
+    # If the model returned bullet points using the "•" character, format them nicely
+    if "•" in text:
+        parts = [part.strip() for part in text.split("•") if part.strip()]
+        if parts:
+            bullet_lines = [f"- {part}" for part in parts]
+            bullets_md = "\n".join(bullet_lines)
+            st.markdown(bullets_md)
+            return
+
+    # Fallback: render as plain text
+    st.write(summary_text)
 
 
 def render_sources(sources: Iterable[Mapping[str, Any]]) -> None:

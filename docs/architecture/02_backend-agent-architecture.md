@@ -1,8 +1,10 @@
 # Backend + Agent Architecture
 
 This document describes the backend responsibilities, module layout, agent
-graph (nodes/edges), and the FastAPI layer for the news RAG agent, adapted from
-the `Test` specification.
+graph (nodes/edges), and the FastAPI layer for the **legacy summarization
+pipeline** of the news agent, adapted from the `Test` specification.
+For the newer RAG + vector-store architecture (including Gemini-based models
+and `/rag/query`), see `docs/RAG_ARCHITECTURE.md`.
 
 ## 1. Responsibilities
 
@@ -41,7 +43,7 @@ src/news_rag/
 
 `Settings` (Pydantic `BaseSettings`) loads environment variables:
 
-- `OPENAI_API_KEY` or local LLM config.
+- `GOOGLE_API_KEY` for Gemini (Google AI Studio).
 - `TAVILY_API_KEY`.
 - Optional `GNEWS_API_KEY`.
 
@@ -180,7 +182,7 @@ evolves through the graph.
 
 - **Tool failures** (Tavily/GNews):
   - Wrapped with `try/except`; fall back or degrade gracefully.
-- **LLM errors** (OpenAI):
+- **LLM errors** (Gemini / Google Generative AI):
   - Missing API keys raise `RuntimeError` that are surfaced via the `meta`
     field in `/summarize` responses.
 - **Agent safeguards**:

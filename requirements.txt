@@ -5,10 +5,16 @@ pydantic-settings
 httpx
 streamlit
 langchain
+langchain-text-splitters
+langchain-openai
+langchain-chroma
+langchain-community
 langgraph
 python-dotenv
 pytest
-
- tavily-python
- structlog
- openai
+chromadb
+tavily-python
+structlog
+openai
+google-generativeai
+langchain-google-genai
